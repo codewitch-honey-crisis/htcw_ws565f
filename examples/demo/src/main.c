@@ -1,27 +1,3 @@
-# WS565F
-
-A ESP-IDF driver for the Waveshare 5.65" 7-Color E-Paper Module (F)
-Available as a ESP-IDF component or a PlatformIO component (ESP-IDF)
-
-- Non-blocking API so the slow panel doesn't tie up your application code
-- Intrinsic support for Floyd Steinberg dithering from RGB565 (big and little endian) or RGB888
-- No extra dependencies
-- Can support more than one panel
-- Low memory requirements, and CPU efficient
-
-
-```
-[env:node32s]
-platform = espressif32
-board = node32s
-framework = espidf
-lib_deps = 
-	codewitch-honey-crisis/htcw_ws565f
-lib_ldf_mode = deep
-```
-
-```cpp
-// uses tjpgd https://elm-chan.org/fsw/tjpgd/
 #define SPI_HOST SPI2_HOST
 #define PIN_NUM_MISO 19
 #define PIN_NUM_MOSI 23
@@ -202,4 +178,3 @@ void app_main() {
     ws565f_wait(&panel);
 
 }
-```

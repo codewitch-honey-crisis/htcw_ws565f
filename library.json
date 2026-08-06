@@ -1,6 +1,6 @@
 {
     "name": "htcw_ws565f",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Provides Waveshare 5.65\" 7-Color E-Paper Module (F) interfacing support",
     "keywords": ["waveshare","e-paper","e-ink","esp-idf","esp32"],
     "authors": {
@@ -14,5 +14,20 @@
     {
         "type": "git",
         "url": "https://github.com/codewitch-honey-crisis/htcw_ws565f.git"
-    }
+    },
+    "examples": [
+        {
+            "name": "demo",
+            "base": "examples/demo",
+            "files": [
+                "platformio.ini",
+                "sdkconfig.node32s",
+                "include/strong_jpg.h",
+                "include/tjpgd.h",
+                "include/tjpgdcnf.h",
+                "src/main.c",
+                "src/tjpgd.c"
+            ]
+        }
+    ]
 }

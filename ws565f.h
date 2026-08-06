@@ -91,7 +91,7 @@ typedef struct __attribute__((aligned(4))) {
     spi_transaction_t xfer[2];
 } ws565f_dither_cache_t;
 
-/// @brief Dither + write RGB565 (big-endian, R in MSB) pixels. Use exactly like
+/// @brief Dither + write RGB565 (little-endian) pixels. Use exactly like
 /// ws565f_write(): call after ws565f_display(). The cache resets itself at the
 /// first chunk of each frame.
 /// @param h A handle to the display
@@ -100,6 +100,16 @@ typedef struct __attribute__((aligned(4))) {
 /// @param pixel_count the count of pixels
 esp_err_t ws565f_write_rgb16(ws565f_handle_t* h, void* dither_cache,
                              const uint8_t* rgb565, size_t pixel_count);
+/// @brief Dither + write RGB565 (big-endian) pixels. Use exactly like
+/// ws565f_write(): call after ws565f_display(). The cache resets itself at the
+/// first chunk of each frame.
+/// @param h A handle to the display
+/// @param dither_cache A WS565F_DITHER_CACHE_SIZE buffer in DMA-capable RAM, allocated using ws565_create_dither_cache()
+/// @param rgb565 the pixel buffer
+/// @param pixel_count the count of pixels
+esp_err_t ws565f_write_rgb16_be(ws565f_handle_t* h, void* cache,
+                            const uint8_t* rgb565, size_t pixel_count);
+
 /// @brief Dither + write RGB888 (R in MSB). See ws565f_write_rgb16.
 /// @param h A handle to the display
 /// @param dither_cache A WS565F_DITHER_CACHE_SIZE buffer in DMA-capable RAM, allocated using ws565_create_dither_cache()

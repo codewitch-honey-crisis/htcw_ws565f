@@ -308,7 +308,7 @@ static void ws565f_dither_flush(ws565f_handle_t* h, ws565f_dither_cache_t* c, si
     if (c->pending == 2) ws565f_dither_reap(h, c);     // free the slab we swap to
 }
 
-typedef enum { WS565F_FMT_RGB565_BE, WS565F_FMT_RGB888 } ws565f_fmt_t;
+typedef enum { WS565F_FMT_RGB565_BE,WS565F_FMT_RGB565_LE, WS565F_FMT_RGB888 } ws565f_fmt_t;
 
 static esp_err_t ws565f_write_dithered(ws565f_handle_t* h, void* cache,
                                        const uint8_t* src, size_t pixel_count,
@@ -342,15 +342,28 @@ static esp_err_t ws565f_write_dithered(ws565f_handle_t* h, void* cache,
 
     for (size_t p = 0; p < pixel_count; ++p) {
         int r, g, b;
-        if (fmt == WS565F_FMT_RGB565_BE) {
-            uint16_t v = ((uint16_t)src[0] << 8) | src[1]; src += 2;
-            r = ((v >> 11) & 0x1F) * 255 / 31;
-            g = ((v >>  5) & 0x3F) * 255 / 63;
-            b = ( v        & 0x1F) * 255 / 31;
-        } else {
-            r = src[0]; g = src[1]; b = src[2]; src += 3;
-        }
+        switch(fmt) {
+            case WS565F_FMT_RGB565_BE: {
+                uint16_t v = ((uint16_t)src[0] << 8) | src[1]; src += 2;
+                r = ((v >> 11) & 0x1F) * 255 / 31;
+                g = ((v >>  5) & 0x3F) * 255 / 63;
+                b = ( v        & 0x1F) * 255 / 31;
+                break;
+            }
+            case WS565F_FMT_RGB565_LE: {
+                uint16_t v = src[0] | ((uint16_t)src[1]<<8); src += 2;
+                r = ((v >> 11) & 0x1F) * 255 / 31;
+                g = ((v >>  5) & 0x3F) * 255 / 63;
+                b = ( v        & 0x1F) * 255 / 31;
+                break;
+            }
+            default: {
+                r = src[0]; g = src[1]; b = src[2]; src += 3;
+                break;
+            }
 
+        }
+        
         const uint32_t x = c->col;
         int16_t* e = &c->err[x * 3];
         int vr = r + e[0] + c->carry[0];
@@ -401,8 +414,13 @@ static esp_err_t ws565f_write_dithered(ws565f_handle_t* h, void* cache,
 
 esp_err_t ws565f_write_rgb16(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb565, size_t pixel_count) {
+    return ws565f_write_dithered(h, cache, rgb565, pixel_count, WS565F_FMT_RGB565_LE);
+}
+esp_err_t ws565f_write_rgb16_be(ws565f_handle_t* h, void* cache,
+                             const uint8_t* rgb565, size_t pixel_count) {
     return ws565f_write_dithered(h, cache, rgb565, pixel_count, WS565F_FMT_RGB565_BE);
 }
+
 esp_err_t ws565f_write_rgb24(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb888, size_t pixel_count) {
     return ws565f_write_dithered(h, cache, rgb888, pixel_count, WS565F_FMT_RGB888);
