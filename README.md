@@ -48,7 +48,6 @@ lib_ldf_mode = deep
 
 /* Bytes per pixel of image output */
 #define N_BPP (3 - JD_FORMAT)
-
 static ws565f_handle_t panel;
 static void* panel_dither_cache;
 static TickType_t ts = 0;
@@ -71,7 +70,7 @@ static void spi_bus_init() {
     bus_config.data5_io_num = -1;
     bus_config.data6_io_num = -1;
     bus_config.data7_io_num = -1;
-    bus_config.max_transfer_sz = 600/2+8;
+    bus_config.max_transfer_sz = WS565F_PANEL_WIDTH/2+8;
     bus_config.mosi_io_num = PIN_NUM_MOSI;
     bus_config.miso_io_num = PIN_NUM_MISO;
     bus_config.sclk_io_num = PIN_NUM_CLK;
@@ -110,7 +109,7 @@ int jpg_out_func (      /* Returns 1 to continue, 0 to abort */
 
     /* Copy the output image rectangle to the frame buffer */
     src = (uint8_t*)bitmap;                           /* Output bitmap */
-    dst = dev->fbuf + 2 * (rect->left);  /* Left-top of rectangle in the frame buffer */
+    dst = dev->fbuf + N_BPP * (rect->left);  /* Left-top of rectangle in the frame buffer */
     bws = N_BPP * (rect->right - rect->left + 1);     /* Width of the rectangle [byte] */
     bwd = N_BPP * dev->wfbuf;                         /* Width of the frame buffer [byte] */
     for (y = rect->top; y <= rect->bottom; y++) {
@@ -118,7 +117,16 @@ int jpg_out_func (      /* Returns 1 to continue, 0 to abort */
         src += bws; dst += bwd;  /* Next line */
     }
     if(rect->right+1==WS565F_PANEL_WIDTH) {
-        ws565f_write_rgb16(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+        // auto fn = write_fns[N_BPP];
+        // if(fn!=nullptr) {
+        //     fn(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+        // }
+        if(N_BPP==3) {
+            ws565f_write_rgb24(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+        } else if(N_BPP==2) {
+            ws565f_write_rgb16(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+        }
+        
     }
     if(xTaskGetTickCount()>=ts+pdMS_TO_TICKS(1000)) {
         ts = xTaskGetTickCount();
@@ -129,7 +137,17 @@ int jpg_out_func (      /* Returns 1 to continue, 0 to abort */
     return 1;    /* Continue to decompress */
 }
 
-
+static void wait_with_progress() {
+    while(!ws565f_ready(&panel)) {
+        ws565f_update(&panel);
+        if(xTaskGetTickCount()>=ts+pdMS_TO_TICKS(1000)) {
+            ts = xTaskGetTickCount();
+            fputs(".",stdout);
+            fflush(stdout);
+            vTaskDelay(5);
+        }
+    }    
+}
 void app_main() {
     puts("Booted");
     spi_bus_init();
@@ -140,6 +158,8 @@ void app_main() {
         PIN_NUM_CS, PIN_NUM_DC,
         PIN_NUM_RST, PIN_NUM_WAIT
     };
+    ts = xTaskGetTickCount();
+    fputs("Initializing panel",stdout);
     ws565f_initialize(&cfg,&panel);
     /* Prepare to decompress */
     void* work = (void*)malloc(3500);
@@ -151,7 +171,7 @@ void app_main() {
         ESP_ERROR_CHECK(ESP_ERR_NOT_SUPPORTED);
     }
     /* Initialize output device (Create a frame buffer) */
-    devid.fbuf = (uint8_t*)malloc(2 * jdec.width * 16);
+    devid.fbuf = (uint8_t*)malloc(N_BPP * jdec.width * 16);
     if(devid.fbuf==NULL) {
         ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
     }
@@ -164,11 +184,11 @@ void app_main() {
         ESP_ERROR_CHECK(ESP_ERR_INVALID_SIZE);
     }
     devid.wfbuf = jdec.width;
-    ws565f_wait(&panel); // wait for initialization to complete
+    // wait for initialization to complete
+    wait_with_progress();
     ws565f_display(&panel); // begin the draw operation
-    ts = xTaskGetTickCount();
     size_t free_mem = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    printf("Free heap: %0.2fKB\n",((float)free_mem)/1024.f);
+    printf("\nFree heap: %0.2fKB\n",((float)free_mem)/1024.f);
     fputs("Loading jpg",stdout);
     res = jd_decomp(&jdec, jpg_out_func, 0);   /* Start to decompress with 1/1 scaling */
     if (res == JDR_OK) {
@@ -181,17 +201,9 @@ void app_main() {
         return;
     }
 
-    fputs("\nWaiting for display to finish",stdout);
+    fputs("Waiting for display to finish",stdout);
     // could just call ws565f_wait(&panel) here instead of showing progress:
-    while(!ws565f_ready(&panel)) {
-        ws565f_update(&panel);
-        if(xTaskGetTickCount()>=ts+pdMS_TO_TICKS(1000)) {
-            ts = xTaskGetTickCount();
-            fputs(".",stdout);
-            fflush(stdout);
-            vTaskDelay(5);
-        }
-    }
+    wait_with_progress();
     free(devid.fbuf);    /* Discard frame buffer */
     free(work);
     ws565f_destroy_dither_cache(panel_dither_cache);
