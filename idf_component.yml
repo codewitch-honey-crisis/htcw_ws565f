@@ -1,4 +1,4 @@
-version: "0.3.0"
+version: "0.3.1"
 description: "Provides Waveshare 5.65\" 7-Color E-Paper Module (F) interfacing support"
 dependencies:
   idf:

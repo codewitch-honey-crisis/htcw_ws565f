@@ -32,6 +32,18 @@ extern "C" {
 // Bytes to reserve for a nearest-color (no-dither) cache.
 #define WS565F_NEAREST_CACHE_SIZE (sizeof(ws565f_cache_common_t))
 
+// WS565F colors
+enum {
+    WS5655F_BLACK = 0,
+    WS5655F_WHITE,
+    WS5655F_GREEN,
+    WS5655F_BLUE,
+    WS5655F_RED,
+    WS5655F_YELLOW,
+    WS5655F_ORANGE,
+    WS5655F_INVERT
+};
+
 // Carried in spi_transaction_t::user so the shared DC callback knows which
 // panel's DC pin to drive and to what level. Lives inside the handle.
 typedef struct {
