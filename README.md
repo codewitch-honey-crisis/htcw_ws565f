@@ -4,7 +4,7 @@ A ESP-IDF driver for the Waveshare 5.65" 7-Color E-Paper Module (F)
 Available as a ESP-IDF component or a PlatformIO component (ESP-IDF)
 
 - Non-blocking API so the slow panel doesn't tie up your application code
-- Intrinsic support for Floyd Steinberg dithering from RGB565 (big and little endian) or RGB888
+- Intrinsic support for Floyd Steinberg dithering or nearest color matching from RGB565 (big and little endian) or RGB888
 - No extra dependencies
 - Can support more than one panel
 - Low memory requirements, and CPU efficient
