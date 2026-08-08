@@ -49,7 +49,7 @@ lib_ldf_mode = deep
 /* Bytes per pixel of image output */
 #define N_BPP (3 - JD_FORMAT)
 static ws565f_handle_t panel;
-static void* panel_dither_cache;
+static void* panel_cache;
 static TickType_t ts = 0;
 /* Session identifier for input/output functions (Name, members and usage are as user defined) */
 typedef struct {
@@ -70,7 +70,7 @@ static void spi_bus_init() {
     bus_config.data5_io_num = -1;
     bus_config.data6_io_num = -1;
     bus_config.data7_io_num = -1;
-    bus_config.max_transfer_sz = WS565F_PANEL_WIDTH/2+8;
+    bus_config.max_transfer_sz = WS565F_PANEL_WIDTH/2*16+8;
     bus_config.mosi_io_num = PIN_NUM_MOSI;
     bus_config.miso_io_num = PIN_NUM_MISO;
     bus_config.sclk_io_num = PIN_NUM_CLK;
@@ -119,12 +119,12 @@ int jpg_out_func (      /* Returns 1 to continue, 0 to abort */
     if(rect->right+1==WS565F_PANEL_WIDTH) {
         // auto fn = write_fns[N_BPP];
         // if(fn!=nullptr) {
-        //     fn(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+        //     fn(&panel,panel_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
         // }
         if(N_BPP==3) {
-            ws565f_write_rgb24(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+            ws565f_write_rgb24(&panel,panel_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
         } else if(N_BPP==2) {
-            ws565f_write_rgb16(&panel,panel_dither_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
+            ws565f_write_rgb16(&panel,panel_cache,dev->fbuf,WS565F_PANEL_WIDTH*(rect->bottom-rect->top+1));
         }
         
     }
@@ -175,8 +175,8 @@ void app_main() {
     if(devid.fbuf==NULL) {
         ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
     }
-    panel_dither_cache = ws565f_create_dither_cache();
-    if(panel_dither_cache==NULL) {
+    panel_cache = ws565f_create_dither_cache();
+    if(panel_cache==NULL) {
         ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
     }
     
@@ -197,7 +197,7 @@ void app_main() {
         printf("JPEG decompression failed (rc=%d)\n", res);
         free(devid.fbuf);    /* Discard frame buffer */
         free(work);
-        ws565f_destroy_dither_cache(panel_dither_cache);
+        ws565f_destroy_cache(panel_cache);
         return;
     }
 
@@ -206,7 +206,7 @@ void app_main() {
     wait_with_progress();
     free(devid.fbuf);    /* Discard frame buffer */
     free(work);
-    ws565f_destroy_dither_cache(panel_dither_cache);
+    ws565f_destroy_cache(panel_cache);
 
     puts("\nDevice updated");
     puts("Sleeping");

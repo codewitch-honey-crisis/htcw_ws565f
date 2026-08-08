@@ -8,8 +8,8 @@
 
 // palette order == panel color code: black,white,green,blue,red,yellow,orange
 static const uint8_t WS565F_PAL[7][3] = {
-    {  0,  0,  0}, {255,255,255}, {  0,255,  0}, {  0,  0,255},
-    {255,  0,  0}, {255,255,  0}, {255,128,  0}
+    {  0,  0,  0}, {255,255,255}, {  0,255,  0}, {  0,  0,127},
+    {255,  0,  0}, {255,255,  0}, {255,127,  0}
 };
 
 typedef enum {
@@ -289,13 +289,13 @@ static inline uint8_t ws565f_nearest(int r, int g, int b) {
 
 // reap the oldest in-flight output slab (FIFO; only our transactions are queued
 // during the data frame, so results come back in the order we sent them)
-static void ws565f_dither_reap(ws565f_handle_t* h, ws565f_dither_cache_t* c) {
+static void ws565f_dither_reap(ws565f_handle_t* h, ws565f_cache_common_t* c) {
     spi_transaction_t* done = nullptr;
     ESP_ERROR_CHECK(spi_device_get_trans_result(h->spi, &done, portMAX_DELAY));
     --c->pending;
 }
 // queue the current slab (n bytes) and advance the double buffer
-static void ws565f_dither_flush(ws565f_handle_t* h, ws565f_dither_cache_t* c, size_t n) {
+static void ws565f_dither_flush(ws565f_handle_t* h, ws565f_cache_common_t* c, size_t n) {
     if (n == 0) return;
     spi_transaction_t* t = &c->xfer[c->cur];
     memset(t, 0, sizeof(*t));
@@ -310,26 +310,34 @@ static void ws565f_dither_flush(ws565f_handle_t* h, ws565f_dither_cache_t* c, si
 
 typedef enum { WS565F_FMT_RGB565_BE,WS565F_FMT_RGB565_LE, WS565F_FMT_RGB888 } ws565f_fmt_t;
 
-static esp_err_t ws565f_write_dithered(ws565f_handle_t* h, void* cache,
-                                       const uint8_t* src, size_t pixel_count,
-                                       ws565f_fmt_t fmt) {
-    ws565f_dither_cache_t* c = (ws565f_dither_cache_t*)cache;
-    if (c == nullptr) return ESP_ERR_INVALID_ARG;
+static esp_err_t ws565f_write_indexed(ws565f_handle_t* h, void* cache,
+                                      const uint8_t* src, size_t pixel_count,
+                                      ws565f_fmt_t fmt) {
+    ws565f_cache_common_t* cc = (ws565f_cache_common_t*)cache;
+    if (cc == nullptr) return ESP_ERR_INVALID_ARG;
+
+    // Discriminate on the flag byte. The dither view is only valid (and only
+    // touched) when the cache was created as a dither cache.
+    const bool dither = (cc->kind == WS565F_CACHE_DITHER);
+    ws565f_dither_cache_t* dc = dither ? (ws565f_dither_cache_t*)cache : nullptr;
 
     if (h->state == PS_DISPLAY) ws565f_update(h);       // advance into data phase
 
     if (h->state == PS_DISPLAY_DATA) {
-        // first chunk of the frame: select, send 0x10 start, reset dither state
+        // first chunk of the frame: select, send 0x10 start, reset cache state
         gpio_set_level(h->cs_pin, 0);
         spi_transaction_t cmd; memset(&cmd, 0, sizeof(cmd));
         cmd.flags = SPI_TRANS_USE_TXDATA; cmd.tx_data[0] = 0x10;
         cmd.length = 8; cmd.user = &h->dc_cmd;
         ESP_ERROR_CHECK(spi_device_polling_transmit(h->spi, &cmd)); // nothing queued yet
 
-        memset(c->err,   0, sizeof(c->err));
-        memset(c->carry, 0, sizeof(c->carry));
-        memset(c->dr,    0, sizeof(c->dr));
-        c->col = 0; c->phase = 0; c->cur = 0; c->pending = 0;
+        if (dither) {                                   // error state, dither only
+            memset(dc->err,   0, sizeof(dc->err));
+            memset(dc->carry, 0, sizeof(dc->carry));
+            memset(dc->dr,    0, sizeof(dc->dr));
+            dc->col = 0;
+        }
+        cc->phase = 0; cc->cur = 0; cc->pending = 0;    // packing state, shared
         h->state = PS_DISPLAY_DATA_NEXT;
     }
     if (h->state != PS_DISPLAY_DATA_NEXT) return ESP_ERR_INVALID_STATE;
@@ -337,7 +345,7 @@ static esp_err_t ws565f_write_dithered(ws565f_handle_t* h, void* cache,
     if (pixel_count > h->pixels_remaining) pixel_count = h->pixels_remaining;
     if (pixel_count == 0) return ESP_OK;
 
-    uint8_t* out = c->slab[c->cur];    // always free here (reaped after each swap)
+    uint8_t* out = cc->slab[cc->cur];  // always free here (reaped after each swap)
     size_t obytes = 0;
 
     for (size_t p = 0; p < pixel_count; ++p) {
@@ -363,74 +371,89 @@ static esp_err_t ws565f_write_dithered(ws565f_handle_t* h, void* cache,
             }
 
         }
-        
-        const uint32_t x = c->col;
-        int16_t* e = &c->err[x * 3];
-        int vr = r + e[0] + c->carry[0];
-        int vg = g + e[1] + c->carry[1];
-        int vb = b + e[2] + c->carry[2];
 
-        uint8_t idx = ws565f_nearest(vr, vg, vb);
-        int ch_e[3] = { vr - WS565F_PAL[idx][0],
-                        vg - WS565F_PAL[idx][1],
-                        vb - WS565F_PAL[idx][2] };
+        uint8_t idx;
+        if (dither) {
+            const uint32_t x = dc->col;
+            int16_t* e = &dc->err[x * 3];
+            int vr = r + e[0] + dc->carry[0];
+            int vg = g + e[1] + dc->carry[1];
+            int vb = b + e[2] + dc->carry[2];
 
-        for (int k = 0; k < 3; ++k) {
-            int ev = ch_e[k];
-            int e7 = ev*7/16, e5 = ev*5/16, e3 = ev*3/16;
-            int e1 = ev - e7 - e5 - e3;                 // conserve total error
-            c->carry[k] = (int16_t)e7;                  // -> (x+1, y)
-            if (x > 0)                                   // -> (x-1, y+1)
-                c->err[(x-1)*3 + k] = (int16_t)(c->err[(x-1)*3 + k] + e3);
-            c->err[x*3 + k] = (int16_t)(e5 + c->dr[k]);  // -> (x, y+1) + prior (x,y+1)
-            c->dr[k] = (int16_t)e1;                       // -> (x+1, y+1)
+            idx = ws565f_nearest(vr, vg, vb);
+            int ch_e[3] = { vr - WS565F_PAL[idx][0],
+                            vg - WS565F_PAL[idx][1],
+                            vb - WS565F_PAL[idx][2] };
+
+            for (int k = 0; k < 3; ++k) {
+                int ev = ch_e[k];
+                int e7 = ev*7/16, e5 = ev*5/16, e3 = ev*3/16;
+                int e1 = ev - e7 - e5 - e3;                 // conserve total error
+                dc->carry[k] = (int16_t)e7;                 // -> (x+1, y)
+                if (x > 0)                                   // -> (x-1, y+1)
+                    dc->err[(x-1)*3 + k] = (int16_t)(dc->err[(x-1)*3 + k] + e3);
+                dc->err[x*3 + k] = (int16_t)(e5 + dc->dr[k]);// -> (x, y+1) + prior (x,y+1)
+                dc->dr[k] = (int16_t)e1;                      // -> (x+1, y+1)
+            }
+
+            if (++dc->col == WS565F_PANEL_WIDTH) {          // row wrap: drop carries
+                dc->col = 0;
+                dc->carry[0] = dc->carry[1] = dc->carry[2] = 0;
+                dc->dr[0] = dc->dr[1] = dc->dr[2] = 0;
+            }
+        } else {
+            idx = ws565f_nearest(r, g, b);                  // nearest-color only
         }
 
         // pack: first pixel of a byte = high nibble
-        if (c->phase == 0) { c->partial = (uint8_t)(idx << 4); c->phase = 1; }
+        if (cc->phase == 0) { cc->partial = (uint8_t)(idx << 4); cc->phase = 1; }
         else {
-            out[obytes++] = c->partial | idx; c->phase = 0;
+            out[obytes++] = cc->partial | idx; cc->phase = 0;
             if (obytes == WS565F_SLAB_BYTES) {
-                ws565f_dither_flush(h, c, obytes);
-                out = c->slab[c->cur]; obytes = 0;
+                ws565f_dither_flush(h, cc, obytes);
+                out = cc->slab[cc->cur]; obytes = 0;
             }
-        }
-
-        if (++c->col == WS565F_PANEL_WIDTH) {            // row wrap: drop carries
-            c->col = 0;
-            c->carry[0] = c->carry[1] = c->carry[2] = 0;
-            c->dr[0] = c->dr[1] = c->dr[2] = 0;
         }
     }
 
-    ws565f_dither_flush(h, c, obytes);                   // tail of this chunk
+    ws565f_dither_flush(h, cc, obytes);                  // tail of this chunk
     h->pixels_remaining -= pixel_count;
 
     if (h->pixels_remaining == 0)                        // last write: let DMA finish
-        while (c->pending) ws565f_dither_reap(h, c);     // so PS_DISPLAY_END's 0x04 is safe
+        while (cc->pending) ws565f_dither_reap(h, cc);   // so PS_DISPLAY_END's 0x04 is safe
 
     return ESP_OK;
 }
 
 esp_err_t ws565f_write_rgb16(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb565, size_t pixel_count) {
-    return ws565f_write_dithered(h, cache, rgb565, pixel_count, WS565F_FMT_RGB565_LE);
+    return ws565f_write_indexed(h, cache, rgb565, pixel_count, WS565F_FMT_RGB565_LE);
 }
 esp_err_t ws565f_write_rgb16_be(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb565, size_t pixel_count) {
-    return ws565f_write_dithered(h, cache, rgb565, pixel_count, WS565F_FMT_RGB565_BE);
+    return ws565f_write_indexed(h, cache, rgb565, pixel_count, WS565F_FMT_RGB565_BE);
 }
 
 esp_err_t ws565f_write_rgb24(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb888, size_t pixel_count) {
-    return ws565f_write_dithered(h, cache, rgb888, pixel_count, WS565F_FMT_RGB888);
+    return ws565f_write_indexed(h, cache, rgb888, pixel_count, WS565F_FMT_RGB888);
 }
 
 void* ws565f_create_dither_cache(void) {
-    return heap_caps_malloc(WS565F_DITHER_CACHE_SIZE, MALLOC_CAP_DMA);
+    ws565f_dither_cache_t* c =
+        (ws565f_dither_cache_t*)heap_caps_malloc(WS565F_DITHER_CACHE_SIZE, MALLOC_CAP_DMA);
+    if (c != nullptr) c->common.kind = WS565F_CACHE_DITHER;
+    return c;
 }
 
-void ws565f_destroy_dither_cache(void* cache) {
+void* ws565f_create_nearest_cache(void) {
+    ws565f_cache_common_t* c =
+        (ws565f_cache_common_t*)heap_caps_malloc(WS565F_NEAREST_CACHE_SIZE, MALLOC_CAP_DMA);
+    if (c != nullptr) c->kind = WS565F_CACHE_NEAREST;
+    return c;
+}
+
+void ws565f_destroy_cache(void* cache) {
     return heap_caps_free(cache);
 }
 

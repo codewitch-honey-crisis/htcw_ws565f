@@ -29,6 +29,8 @@ extern "C" {
 #endif
 // Bytes to reserve for a dither cache.
 #define WS565F_DITHER_CACHE_SIZE (sizeof(ws565f_dither_cache_t))
+// Bytes to reserve for a nearest-color (no-dither) cache.
+#define WS565F_NEAREST_CACHE_SIZE (sizeof(ws565f_cache_common_t))
 
 // Carried in spi_transaction_t::user so the shared DC callback knows which
 // panel's DC pin to drive and to what level. Lives inside the handle.
@@ -76,54 +78,78 @@ typedef struct {
     int busy_pin;
 } ws565f_config_t;
 
-// Dithering scratch. MUST live in DMA-capable internal RAM (its output slabs
-// are handed straight to SPI DMA). One per concurrent frame source.
+// Selects how a cache maps RGB pixels onto the 7-color palette. Stored in the
+// first byte of every cache so the write routines can discriminate the buffer
+// they were handed.
+typedef enum {
+    WS565F_CACHE_DITHER  = 0, // Floyd-Steinberg-style error diffusion
+    WS565F_CACHE_NEAREST = 1, // nearest-color matching only, no diffusion
+} ws565f_cache_kind_t;
+
+// Common prefix shared by every cache kind. MUST live in DMA-capable internal
+// RAM (its output slabs are handed straight to SPI DMA). One per concurrent
+// frame source. `kind` is the first byte and signals what (if anything)
+// follows this prefix.
 typedef struct __attribute__((aligned(4))) {
-    int16_t  err[WS565F_PANEL_WIDTH * 3]; // one-row error diffusion line (RGB)
-    int16_t  carry[3];                    // 7/16 horizontal carry
-    int16_t  dr[3];                       // 1/16 down-right carry
-    uint32_t col;                         // current column, 0..WIDTH-1
+    uint8_t  kind;                        // ws565f_cache_kind_t (first byte)
     uint8_t  partial;                     // half-packed output byte
     uint8_t  phase;                       // 0: next nibble high, 1: low
     uint8_t  cur;                         // slab being filled
     uint8_t  pending;                     // slabs in flight (0..2)
+    uint8_t  _pad[3];                     // keep the slabs 4-byte (DMA) aligned
     uint8_t  slab[2][(WS565F_DITHER_SLAB_PIXELS + 1) / 2];
     spi_transaction_t xfer[2];
+} ws565f_cache_common_t;
+
+// Dithering scratch. Embeds the common prefix, then the error-diffusion state.
+typedef struct __attribute__((aligned(4))) {
+    ws565f_cache_common_t common;         // shared header (kind, slabs, packing)
+    int16_t  err[WS565F_PANEL_WIDTH * 3]; // one-row error diffusion line (RGB)
+    int16_t  carry[3];                    // 7/16 horizontal carry
+    int16_t  dr[3];                       // 1/16 down-right carry
+    uint32_t col;                         // current column, 0..WIDTH-1
 } ws565f_dither_cache_t;
 
-/// @brief Dither + write RGB565 (little-endian) pixels. Use exactly like
+/// @brief Quantize + write RGB565 (little-endian) pixels. Use exactly like
 /// ws565f_write(): call after ws565f_display(). The cache resets itself at the
-/// first chunk of each frame.
+/// first chunk of each frame. The cache's kind selects the color mapping:
+/// a dither cache diffuses error, a nearest cache maps each pixel to the
+/// closest palette color only.
 /// @param h A handle to the display
-/// @param dither_cache A WS565F_DITHER_CACHE_SIZE buffer in DMA-capable RAM, allocated using ws565_create_dither_cache()
+/// @param cache A DMA-capable cache from ws565f_create_dither_cache() or ws565f_create_nearest_cache()
 /// @param rgb565 the pixel buffer
 /// @param pixel_count the count of pixels
-esp_err_t ws565f_write_rgb16(ws565f_handle_t* h, void* dither_cache,
+esp_err_t ws565f_write_rgb16(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb565, size_t pixel_count);
-/// @brief Dither + write RGB565 (big-endian) pixels. Use exactly like
+/// @brief Quantize + write RGB565 (big-endian) pixels. Use exactly like
 /// ws565f_write(): call after ws565f_display(). The cache resets itself at the
-/// first chunk of each frame.
+/// first chunk of each frame. The cache's kind selects the color mapping:
+/// a dither cache diffuses error, a nearest cache maps each pixel to the
+/// closest palette color only.
 /// @param h A handle to the display
-/// @param dither_cache A WS565F_DITHER_CACHE_SIZE buffer in DMA-capable RAM, allocated using ws565_create_dither_cache()
+/// @param cache A DMA-capable cache from ws565f_create_dither_cache() or ws565f_create_nearest_cache()
 /// @param rgb565 the pixel buffer
 /// @param pixel_count the count of pixels
 esp_err_t ws565f_write_rgb16_be(ws565f_handle_t* h, void* cache,
                             const uint8_t* rgb565, size_t pixel_count);
 
-/// @brief Dither + write RGB888 (R in MSB). See ws565f_write_rgb16.
+/// @brief Quantize + write RGB888 (R in MSB). See ws565f_write_rgb16.
 /// @param h A handle to the display
-/// @param dither_cache A WS565F_DITHER_CACHE_SIZE buffer in DMA-capable RAM, allocated using ws565_create_dither_cache()
+/// @param cache A DMA-capable cache from ws565f_create_dither_cache() or ws565f_create_nearest_cache()
 /// @param rgb888 the pixel buffer
 /// @param pixel_count the count of pixels
-esp_err_t ws565f_write_rgb24(ws565f_handle_t* h, void* dither_cache,
+esp_err_t ws565f_write_rgb24(ws565f_handle_t* h, void* cache,
                              const uint8_t* rgb888, size_t pixel_count);
 /// @brief creates a dither cache
 /// @return A dither cache, or null if no memory (requires just under 5KB)
 void* ws565f_create_dither_cache(void);
-/// @brief creates a dither cache
-/// @param cache A dither cache created with ws565_create_dither_cache()
-void ws565f_destroy_dither_cache(void* cache);
-
+/// @brief creates a nearest-color (no-dither) cache
+/// @return A nearest cache, or null if no memory (requires about 700 bytes)
+void* ws565f_create_nearest_cache(void);
+/// @brief frees a cache created with ws565f_create_dither_cache() or
+/// ws565f_create_nearest_cache()
+/// @param cache the cache to free
+void ws565f_destroy_cache(void* cache);
 /// @brief Indicates whether the display has been initialized
 /// @param h A handle to the display
 /// @return True if initialized, otherwise false
